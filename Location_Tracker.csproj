@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
 		<TargetFrameworks>net10.0-android</TargetFrameworks>
@@ -84,4 +84,11 @@
 		<Folder Include="Resources\Raw\" />
 	</ItemGroup>
 
+	<ItemGroup>
+	
+		 <Compile Remove="Location_Tracker.Tests\**\*.cs " />
+
+	</ItemGroup> 
+	
+	
 </Project>
