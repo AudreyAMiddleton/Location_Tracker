@@ -1,6 +1,10 @@
-﻿using System.Diagnostics;
+﻿using System.ComponentModel;
+using System.Diagnostics;
 using Location_Tracker.Models;
 using Location_Tracker.Services;
+using Location_Tracker.ViewModels;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Devices;
 using Microsoft.Maui.Devices.Sensors;
 using Microsoft.Maui.Maps;
@@ -9,24 +13,51 @@ namespace Location_Tracker
 {
     /// <summary>
     /// Coordinates the Location Tracker user interface while delegating
-    /// permission handling, location tracking, persistence, heat map
-    /// generation, and distance calculations to their respective services.
+    /// tracking, persistence, visualization, and distance calculations
+    /// to their respective services.
     /// </summary>
     public partial class MainPage : ContentPage
     {
-        private readonly LocationTrackingService _locationTrackingService = new();
-        private readonly LocationDatabaseService _locationDatabase = new();
-        private readonly HeatMapService _heatMapService = new();
-        private readonly DistanceStatisticsService _distanceStatisticsService = new();
+        private readonly LocationTrackerViewModel _viewModel;
+        private readonly LocationTrackingService _locationTrackingService;
+        private readonly LocationDatabaseService _locationDatabase;
+        private readonly HeatMapService _heatMapService;
+        private readonly DistanceStatisticsService _distanceStatisticsService;
+
+        private bool _eventsSubscribed;
 
         public MainPage()
         {
             InitializeComponent();
+
+            _viewModel =
+                MauiProgram.Services
+                    .GetRequiredService<LocationTrackerViewModel>();
+
+            _locationTrackingService =
+                MauiProgram.Services
+                    .GetRequiredService<LocationTrackingService>();
+
+            _locationDatabase =
+                MauiProgram.Services
+                    .GetRequiredService<LocationDatabaseService>();
+
+            _heatMapService =
+                MauiProgram.Services
+                    .GetRequiredService<HeatMapService>();
+
+            _distanceStatisticsService =
+                MauiProgram.Services
+                    .GetRequiredService<DistanceStatisticsService>();
+
+            BindingContext = _viewModel;
         }
 
         protected override async void OnAppearing()
         {
             base.OnAppearing();
+
+            SubscribeToEvents();
 
             try
             {
@@ -39,6 +70,17 @@ namespace Location_Tracker
                     CurrentPositionLabel.Text =
                         "Current Position: Location permission not granted.";
 
+                    StatusLabel.Text =
+                        "Status: Location permission required.";
+
+                    StartTrackingButton.IsEnabled = false;
+                    StopTrackingButton.IsEnabled = false;
+
+                    await DisplayAlert(
+                        "Location Permission",
+                        "Location permission is required to track and save location data.",
+                        "OK");
+
                     return;
                 }
 
@@ -50,45 +92,31 @@ namespace Location_Tracker
                 Debug.WriteLine(
                     $"Location history loaded: {savedLocations.Count} saved record(s).");
 
-                UpdateDistanceDisplay(savedLocations);
+                UpdateSavedLocationDisplay(savedLocations);
 
-                if (DeviceInfo.Platform == DevicePlatform.WinUI)
-                {
-                    // Windows uses a list because the Windows MAUI map
-                    // requires an Azure Maps resource that is unavailable
-                    // under the current student subscription regions.
-                    LocationHistoryList.ItemsSource = savedLocations;
-                }
-                else
-                {
-                    // Android uses the map and heat-map visualization.
-                    _heatMapService.RenderHeatMap(
-                        LocationMap,
-                        savedLocations);
+                StartTrackingButton.IsEnabled =
+                    !_viewModel.IsTracking;
 
-                    if (savedLocations.Count > 0)
-                    {
-                        LocationRecord latestLocation =
-                            savedLocations[^1];
+                StopTrackingButton.IsEnabled =
+                    _viewModel.IsTracking;
 
-                        Location center = new(
-                            latestLocation.Latitude,
-                            latestLocation.Longitude);
-
-                        LocationMap.MoveToRegion(
-                            MapSpan.FromCenterAndRadius(
-                                center,
-                                Distance.FromKilometers(1)));
-                    }
-                }
-
-                StartTrackingButton.IsEnabled = true;
-                StopTrackingButton.IsEnabled = false;
+                StatusLabel.Text =
+                    _viewModel.IsTracking
+                        ? "Status: Tracking"
+                        : "Status: Ready";
             }
             catch (Exception ex)
             {
+                StatusLabel.Text =
+                    "Status: Unable to load location data.";
+
                 Debug.WriteLine(
                     $"Location Tracker could not load normally: {ex.Message}");
+
+                await DisplayAlert(
+                    "Location Tracker",
+                    "Location Tracker could not load normally.",
+                    "OK");
             }
         }
 
@@ -104,33 +132,60 @@ namespace Location_Tracker
 
                 if (status != PermissionStatus.Granted)
                 {
-                    Debug.WriteLine(
-                        "Location permission was not granted.");
+                    StatusLabel.Text =
+                        "Status: Location permission required.";
+
+                    await DisplayAlert(
+                        "Location Permission",
+                        "Location permission is required before tracking can start.",
+                        "OK");
 
                     return;
                 }
 
-                bool trackingStarted =
-                    await _locationTrackingService.StartTrackingAsync();
+                await _viewModel.StartTrackingAsync();
 
-                if (trackingStarted)
+                StartTrackingButton.IsEnabled =
+                    !_viewModel.IsTracking;
+
+                StopTrackingButton.IsEnabled =
+                    _viewModel.IsTracking;
+
+                if (_viewModel.IsTracking)
                 {
-                    StartTrackingButton.IsEnabled = false;
-                    StopTrackingButton.IsEnabled = true;
+                    StatusLabel.Text =
+                        "Status: Tracking";
 
                     Debug.WriteLine(
                         "Location tracking started.");
                 }
                 else
                 {
-                    Debug.WriteLine(
-                        "Foreground location tracking did not start.");
+                    string message =
+                        _viewModel.LastError
+                        ?? "Foreground location tracking did not start.";
+
+                    StatusLabel.Text =
+                        $"Status: {message}";
+
+                    await DisplayAlert(
+                        "Location Tracking",
+                        message,
+                        "OK");
                 }
             }
             catch (Exception ex)
             {
+                StatusLabel.Text =
+                    "Status: Tracking could not start.";
+
                 Debug.WriteLine(
                     $"Location tracking could not start: {ex.Message}");
+
+                await DisplayAlert(
+                    "Location Tracking",
+                    "Location tracking could not start.",
+                    "OK");
             }
         }
 
@@ -138,10 +193,13 @@ namespace Location_Tracker
             object sender,
             EventArgs e)
         {
-            _locationTrackingService.StopTracking();
+            _viewModel.StopTracking();
 
             StartTrackingButton.IsEnabled = true;
             StopTrackingButton.IsEnabled = false;
+
+            StatusLabel.Text =
+                "Status: Tracking stopped.";
 
             Debug.WriteLine(
                 "Location tracking stopped.");
@@ -199,6 +257,39 @@ namespace Location_Tracker
                 $"Total Distance: {totalDistanceMiles:F2} mi";
         }
 
+        private void UpdateSavedLocationDisplay(
+            List<LocationRecord> savedLocations)
+        {
+            UpdateDistanceDisplay(savedLocations);
+
+            if (DeviceInfo.Platform == DevicePlatform.WinUI)
+            {
+                LocationHistoryList.ItemsSource = null;
+                LocationHistoryList.ItemsSource = savedLocations;
+            }
+            else
+            {
+                _heatMapService.RenderHeatMap(
+                    LocationMap,
+                    savedLocations);
+
+                if (savedLocations.Count > 0)
+                {
+                    LocationRecord latestLocation =
+                        savedLocations[^1];
+
+                    Location center = new(
+                        latestLocation.Latitude,
+                        latestLocation.Longitude);
+
+                    LocationMap.MoveToRegion(
+                        MapSpan.FromCenterAndRadius(
+                            center,
+                            Distance.FromKilometers(1)));
+                }
+            }
+        }
+
         private async Task RefreshSavedLocationDisplayAsync()
         {
             try
@@ -206,45 +297,127 @@ namespace Location_Tracker
                 List<LocationRecord> savedLocations =
                     await _locationDatabase.GetLocationsAsync();
 
-                UpdateDistanceDisplay(savedLocations);
-
-                if (DeviceInfo.Platform == DevicePlatform.WinUI)
-                {
-                    LocationHistoryList.ItemsSource = null;
-                    LocationHistoryList.ItemsSource = savedLocations;
-                }
-                else
-                {
-                    _heatMapService.RenderHeatMap(
-                        LocationMap,
-                        savedLocations);
-
-                    if (savedLocations.Count > 0)
-                    {
-                        LocationRecord latestLocation =
-                            savedLocations[^1];
-
-                        Location center = new(
-                            latestLocation.Latitude,
-                            latestLocation.Longitude);
-
-                        LocationMap.MoveToRegion(
-                            MapSpan.FromCenterAndRadius(
-                                center,
-                                Distance.FromKilometers(1)));
-                    }
-                }
+                UpdateSavedLocationDisplay(savedLocations);
             }
             catch (Exception ex)
             {
+                StatusLabel.Text =
+                    "Status: Saved locations could not be refreshed.";
+
                 Debug.WriteLine(
                     $"Saved location display could not be refreshed: {ex.Message}");
             }
         }
 
+        private void OnLocationSaved(
+            LocationRecord location)
+        {
+            MainThread.BeginInvokeOnMainThread(
+                async () =>
+                {
+                    CurrentPositionLabel.Text =
+                        $"Current Position: " +
+                        $"{location.Latitude:F6}, " +
+                        $"{location.Longitude:F6}";
+
+                    StatusLabel.Text =
+                        "Status: Tracking";
+
+                    await RefreshSavedLocationDisplayAsync();
+                });
+        }
+
+        private void OnLocationSaveFailed(
+            string message)
+        {
+            MainThread.BeginInvokeOnMainThread(
+                async () =>
+                {
+                    StatusLabel.Text =
+                        $"Status: {message}";
+
+                    await DisplayAlert(
+                        "Location Save Error",
+                        message,
+                        "OK");
+                });
+        }
+
+        private void OnViewModelPropertyChanged(
+            object? sender,
+            PropertyChangedEventArgs e)
+        {
+            MainThread.BeginInvokeOnMainThread(
+                async () =>
+                {
+                    if (e.PropertyName ==
+                        nameof(LocationTrackerViewModel.IsTracking))
+                    {
+                        StartTrackingButton.IsEnabled =
+                            !_viewModel.IsTracking;
+
+                        StopTrackingButton.IsEnabled =
+                            _viewModel.IsTracking;
+                    }
+
+                    if (e.PropertyName ==
+                            nameof(LocationTrackerViewModel.LastError) &&
+                        !string.IsNullOrWhiteSpace(_viewModel.LastError))
+                    {
+                        StatusLabel.Text =
+                            $"Status: {_viewModel.LastError}";
+
+                        await DisplayAlert(
+                            "Location Tracking",
+                            _viewModel.LastError,
+                            "OK");
+                    }
+                });
+        }
+
+        private void SubscribeToEvents()
+        {
+            if (_eventsSubscribed)
+            {
+                return;
+            }
+
+            _locationTrackingService.LocationSaved +=
+                OnLocationSaved;
+
+            _locationTrackingService.LocationSaveFailed +=
+                OnLocationSaveFailed;
+
+            _viewModel.PropertyChanged +=
+                OnViewModelPropertyChanged;
+
+            _eventsSubscribed = true;
+        }
+
+        private void UnsubscribeFromEvents()
+        {
+            if (!_eventsSubscribed)
+            {
+                return;
+            }
+
+            _locationTrackingService.LocationSaved -=
+                OnLocationSaved;
+
+            _locationTrackingService.LocationSaveFailed -=
+                OnLocationSaveFailed;
+
+            _viewModel.PropertyChanged -=
+                OnViewModelPropertyChanged;
+
+            _eventsSubscribed = false;
+        }
+
         protected override void OnDisappearing()
         {
-            _locationTrackingService.StopTracking();
+            _viewModel.StopTracking();
+
+            UnsubscribeFromEvents();
 
             StartTrackingButton.IsEnabled = true;
             StopTrackingButton.IsEnabled = false;

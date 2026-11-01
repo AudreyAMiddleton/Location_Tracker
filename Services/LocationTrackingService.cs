@@ -5,140 +5,55 @@ using Microsoft.Maui.Devices.Sensors;
 namespace Location_Tracker.Services
 {
     /// <summary>
-    /// Listens for foreground location changes and saves each
-    /// reported position to the local SQLite database.
+    /// Persists location updates supplied through ILocationProvider.
+    /// The provider and database are supplied through dependency injection.
     /// </summary>
     public class LocationTrackingService
     {
-        private readonly LocationDatabaseService _locationDatabase = new();
-        private bool _handlersRegistered;
+        private readonly LocationDatabaseService _locationDatabase;
 
-        /// <summary>
-        /// Starts foreground geolocation monitoring and registers the
-        /// event handlers used to process location updates.
-        /// </summary>
-        /// <returns>
-        /// True when foreground location monitoring starts successfully;
-        /// otherwise, false.
-        /// </returns>
-        public async Task<bool> StartTrackingAsync()
+        public event Action<LocationRecord>? LocationSaved;
+
+        public event Action<string>? LocationSaveFailed;
+
+        public LocationTrackingService(
+            ILocationProvider locationProvider,
+            LocationDatabaseService locationDatabase)
         {
-            try
-            {
-                if (Geolocation.IsListeningForeground)
-                {
-                    return true;
-                }
+            _locationDatabase = locationDatabase;
 
-                // Register handlers once so a location update is not
-                // processed multiple times by duplicate subscriptions.
-                if (!_handlersRegistered)
-                {
-                    Geolocation.LocationChanged += OnLocationChanged;
-                    Geolocation.ListeningFailed += OnListeningFailed;
-                    _handlersRegistered = true;
-                }
-
-                // High-accuracy foreground monitoring supplies the sequence
-                // of readings used to build the stored location history.
-                GeolocationListeningRequest request =
-                    new(GeolocationAccuracy.High);
-
-                bool started =
-                    await Geolocation.StartListeningForegroundAsync(request);
-
-                if (!started)
-                {
-                    UnregisterHandlers();
-                }
-
-                return started;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine(
-                    $"Location tracking could not start: {ex.Message}");
-
-                UnregisterHandlers();
-                return false;
-            }
+            locationProvider.LocationChanged +=
+                OnLocationChanged;
         }
 
-        /// <summary>
-        /// Stops foreground location monitoring and removes registered
-        /// geolocation event handlers.
-        /// </summary>
-        public void StopTracking()
+        private async void OnLocationChanged(Location location)
         {
             try
             {
-                if (Geolocation.IsListeningForeground)
-                {
-                    Geolocation.StopListeningForeground();
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine(
-                    $"Location tracking could not stop normally: {ex.Message}");
-            }
-            finally
-            {
-                UnregisterHandlers();
-            }
-        }
-
-        private async void OnLocationChanged(
-            object? sender,
-            GeolocationLocationChangedEventArgs e)
-        {
-            try
-            {
-                // Convert the MAUI location reading into the application's
-                // persistent SQLite model before saving it.
                 LocationRecord locationRecord = new()
                 {
-                    Latitude = e.Location.Latitude,
-                    Longitude = e.Location.Longitude,
-                    Timestamp = e.Location.Timestamp.UtcDateTime
+                    Latitude = location.Latitude,
+                    Longitude = location.Longitude,
+                    Timestamp = location.Timestamp.UtcDateTime
                 };
 
-                await _locationDatabase.SaveLocationAsync(locationRecord);
+                await _locationDatabase
+                    .SaveLocationAsync(locationRecord);
 
-                // Do not write sensitive latitude or longitude values
-                // to diagnostic logs.
                 Debug.WriteLine(
                     "Location record saved successfully.");
+
+                LocationSaved?.Invoke(locationRecord);
             }
             catch (Exception ex)
             {
-                // A failed database write should not terminate
-                // foreground location monitoring.
-                Debug.WriteLine(
-                    $"Location could not be saved: {ex.Message}");
+                string message =
+                    $"Location could not be saved: {ex.Message}";
+
+                Debug.WriteLine(message);
+
+                LocationSaveFailed?.Invoke(message);
             }
-        }
-
-        private void OnListeningFailed(
-            object? sender,
-            GeolocationListeningFailedEventArgs e)
-        {
-            // Preserve application execution while recording the
-            // geolocation failure for diagnostic purposes.
-            Debug.WriteLine(
-                $"Location listening failed: {e.Error}");
-        }
-
-        private void UnregisterHandlers()
-        {
-            if (!_handlersRegistered)
-            {
-                return;
-            }
-
-            Geolocation.LocationChanged -= OnLocationChanged;
-            Geolocation.ListeningFailed -= OnListeningFailed;
-            _handlersRegistered = false;
         }
     }
 }

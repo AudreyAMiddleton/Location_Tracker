@@ -17,6 +17,7 @@ namespace Location_Tracker.ViewModels
         private bool _isTracking;
         private double _currentLatitude;
         private double _currentLongitude;
+        private string? _lastError;
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -65,6 +66,21 @@ namespace Location_Tracker.ViewModels
             }
         }
 
+        public string? LastError
+        {
+            get => _lastError;
+            private set
+            {
+                if (_lastError == value)
+                {
+                    return;
+                }
+
+                _lastError = value;
+                OnPropertyChanged();
+            }
+        }
+
         public LocationTrackerViewModel(
             ILocationProvider locationProvider)
         {
@@ -72,14 +88,25 @@ namespace Location_Tracker.ViewModels
 
             _locationProvider.LocationChanged +=
                 OnLocationChanged;
+
+            _locationProvider.ListeningFailed +=
+                OnListeningFailed;
         }
 
         public async Task<bool> StartTrackingAsync()
         {
+            LastError = null;
+
             bool started =
                 await _locationProvider.StartListeningAsync();
 
             IsTracking = started;
+
+            if (!started && string.IsNullOrWhiteSpace(LastError))
+            {
+                LastError =
+                    "Foreground location tracking did not start.";
+            }
 
             return started;
         }
@@ -91,11 +118,18 @@ namespace Location_Tracker.ViewModels
             IsTracking = false;
         }
 
-        private void OnLocationChanged(
-            Location location)
+        private void OnLocationChanged(Location location)
         {
             CurrentLatitude = location.Latitude;
             CurrentLongitude = location.Longitude;
+        }
+
+        private void OnListeningFailed(string error)
+        {
+            IsTracking = false;
+
+            LastError =
+                $"Location listening failed: {error}";
         }
 
         private void OnPropertyChanged(

@@ -4,10 +4,10 @@
     x:Class="Location_Tracker.MainPage"
     xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
-    xmlns:maps="http://schemas.microsoft.com/dotnet/2021/maui/maps"
+    xmlns:controls="clr-namespace:Location_Tracker.Controls"
     Shell.NavBarIsVisible="False">
 
-    <Grid RowDefinitions="64,*,44,44,72">
+    <Grid RowDefinitions="64,*,44,44,44,72">
 
         <!-- Application header -->
         <Grid
@@ -24,8 +24,8 @@
 
         </Grid>
 
-        <!-- Android and other supported platforms use the map -->
-        <maps:Map
+        <!-- Android and other supported platforms use the heat map -->
+        <controls:HeatMap
             x:Name="LocationMap"
             Grid.Row="1"
             IsShowingUser="True"
@@ -128,9 +128,24 @@
 
         </Grid>
 
-        <!-- Start and Stop tracking controls -->
+        <!-- Displays tracking and error status -->
         <Grid
             Grid.Row="4"
+            BackgroundColor="White"
+            Padding="16,4">
+
+            <Label
+                x:Name="StatusLabel"
+                Text="Status: Ready"
+                FontSize="15"
+                TextColor="Black"
+                VerticalOptions="Center" />
+
+        </Grid>
+
+        <!-- Start and Stop tracking controls -->
+        <Grid
+            Grid.Row="5"
             ColumnDefinitions="*,*"
             ColumnSpacing="12"
             Padding="16,10"

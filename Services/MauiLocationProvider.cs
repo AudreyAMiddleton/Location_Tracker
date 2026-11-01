@@ -3,54 +3,99 @@
 namespace Location_Tracker.Services
 {
     /// <summary>
-    /// Provides access to the real .NET MAUI foreground
-    /// geolocation service used by the application.
+    /// Provides foreground location updates through .NET MAUI.
+    /// Uses the normal MAUI LocationChanged event and also checks
+    /// the current location while tracking so location updates
+    /// continue to reach the application reliably.
     /// </summary>
     public class MauiLocationProvider : ILocationProvider
     {
-        private bool _handlersRegistered;
+        private CancellationTokenSource? _monitorCancellation;
+        private Location? _lastPublishedLocation;
+        private bool _isListening;
 
-        public bool IsListening =>
-            Geolocation.IsListeningForeground;
+        public bool IsListening => _isListening;
 
         public event Action<Location>? LocationChanged;
-
         public event Action<string>? ListeningFailed;
 
         public async Task<bool> StartListeningAsync()
         {
+            if (_isListening)
+            {
+                return true;
+            }
+
             try
             {
-                if (Geolocation.IsListeningForeground)
-                {
-                    return true;
-                }
+                RemoveEventSubscriptions();
 
-                RegisterHandlers();
+                Geolocation.LocationChanged +=
+                    OnGeolocationLocationChanged;
 
-                GeolocationListeningRequest request =
+                Geolocation.ListeningFailed +=
+                    OnGeolocationListeningFailed;
+
+                GeolocationListeningRequest listeningRequest =
                     new(GeolocationAccuracy.High);
 
                 bool started =
                     await Geolocation
-                        .StartListeningForegroundAsync(request);
+                        .StartListeningForegroundAsync(
+                            listeningRequest);
 
                 if (!started)
                 {
-                    UnregisterHandlers();
+                    RemoveEventSubscriptions();
+
+                    ListeningFailed?.Invoke(
+                        "Foreground location tracking did not start.");
+
+                    return false;
                 }
 
-                return started;
+                _isListening = true;
+
+                _monitorCancellation =
+                    new CancellationTokenSource();
+
+                CancellationToken token =
+                    _monitorCancellation.Token;
+
+                // Immediately request the current position so the
+                // application receives an initial location instead
+                // of waiting indefinitely for a movement event.
+                await PublishCurrentLocationAsync(token);
+
+                // Continue checking while foreground tracking is active.
+                _ = MonitorCurrentLocationAsync(token);
+
+                return true;
             }
-            catch
+            catch (Exception ex)
             {
-                UnregisterHandlers();
+                StopListening();
+
+                ListeningFailed?.Invoke(
+                    $"Location tracking could not start: {ex.Message}");
+
                 return false;
             }
         }
 
         public void StopListening()
         {
+            _isListening = false;
+
+            if (_monitorCancellation is not null)
+            {
+                _monitorCancellation.Cancel();
+                _monitorCancellation.Dispose();
+                _monitorCancellation = null;
+            }
+
+            RemoveEventSubscriptions();
+
             try
             {
                 if (Geolocation.IsListeningForeground)
@@ -58,50 +103,120 @@ namespace Location_Tracker.Services
                     Geolocation.StopListeningForeground();
                 }
             }
-            finally
+            catch
             {
-                UnregisterHandlers();
+                // Tracking is already being stopped.
             }
         }
 
-        private void RegisterHandlers()
-        {
-            if (_handlersRegistered)
-            {
-                return;
-            }
-
-            Geolocation.LocationChanged += OnLocationChanged;
-            Geolocation.ListeningFailed += OnListeningFailed;
-
-            _handlersRegistered = true;
-        }
-
-        private void UnregisterHandlers()
-        {
-            if (!_handlersRegistered)
-            {
-                return;
-            }
-
-            Geolocation.LocationChanged -= OnLocationChanged;
-            Geolocation.ListeningFailed -= OnListeningFailed;
-
-            _handlersRegistered = false;
-        }
-
-        private void OnLocationChanged(
+        private void OnGeolocationLocationChanged(
             object? sender,
             GeolocationLocationChangedEventArgs e)
         {
-            LocationChanged?.Invoke(e.Location);
+            PublishLocation(e.Location);
         }
 
-        private void OnListeningFailed(
+        private void OnGeolocationListeningFailed(
             object? sender,
             GeolocationListeningFailedEventArgs e)
         {
-            ListeningFailed?.Invoke(e.Error.ToString());
+            _isListening = false;
+
+            if (_monitorCancellation is not null)
+            {
+                _monitorCancellation.Cancel();
+                _monitorCancellation.Dispose();
+                _monitorCancellation = null;
+            }
+
+            RemoveEventSubscriptions();
+
+            ListeningFailed?.Invoke(
+                $"Location listening failed: {e.Error}");
+        }
+
+        private async Task MonitorCurrentLocationAsync(
+            CancellationToken cancellationToken)
+        {
+            while (_isListening &&
+                   !cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(
+                        TimeSpan.FromSeconds(2),
+                        cancellationToken);
+
+                    await PublishCurrentLocationAsync(
+                        cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    if (_isListening)
+                    {
+                        ListeningFailed?.Invoke(
+                            $"Current location could not be retrieved: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        private async Task PublishCurrentLocationAsync(
+            CancellationToken cancellationToken)
+        {
+            GeolocationRequest request =
+                new(
+                    GeolocationAccuracy.High,
+                    TimeSpan.FromSeconds(5));
+
+            Location? location =
+                await Geolocation.GetLocationAsync(
+                    request,
+                    cancellationToken);
+
+            if (location is not null)
+            {
+                PublishLocation(location);
+            }
+        }
+
+        private void PublishLocation(
+            Location location)
+        {
+            if (_lastPublishedLocation is not null)
+            {
+                bool sameLatitude =
+                    Math.Abs(
+                        _lastPublishedLocation.Latitude -
+                        location.Latitude) < 0.000001;
+
+                bool sameLongitude =
+                    Math.Abs(
+                        _lastPublishedLocation.Longitude -
+                        location.Longitude) < 0.000001;
+
+                if (sameLatitude && sameLongitude)
+                {
+                    return;
+                }
+            }
+
+            _lastPublishedLocation = location;
+
+            LocationChanged?.Invoke(location);
+        }
+
+        private void RemoveEventSubscriptions()
+        {
+            Geolocation.LocationChanged -=
+                OnGeolocationLocationChanged;
+
+            Geolocation.ListeningFailed -=
+                OnGeolocationListeningFailed;
         }
     }
 }
